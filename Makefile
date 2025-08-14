@@ -86,7 +86,9 @@ mpas_smoke_wrapper.o:      \
 	dep_dry_simple_mod.o \
 	dep_dry_mod_emerson.o \
 	ssalt_mod.o \
+	dust_fengsha_mod.o \
 	module_smoke_diagnostics.o \
+	module_fire_emissions.o \
 	dep_data_mod.o \
 	rad_data_mod.o
 
