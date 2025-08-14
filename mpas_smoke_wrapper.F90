@@ -10,7 +10,7 @@ module mpas_smoke_wrapper
    use mpas_smoke_config
    use mpas_smoke_init 
    use module_plumerise,      only : ebu_driver
-   use module_wildfire_smoke_emissions
+   use module_fire_emissions
    use module_add_emiss_burn, only : add_emis_burn
    use dep_dry_simple_mod,    only : dry_dep_driver_simple
    use dep_dry_mod_emerson,   only : dry_dep_driver_emerson

@@ -1,6 +1,6 @@
-!> Debugged and corrected module_wildfire_smoke_emissions
+!> Debugged and corrected module_fire_emissions
 
-module module_wildfire_smoke_emissions
+module module_fire_emissions
     use mpas_kind_types
     use mpas_smoke_init, only : p_smoke_fine, p_smoke_coarse
     use mpas_smoke_config
@@ -437,4 +437,4 @@ subroutine diurnal_cycle(  dtstep,dz8w,rho_phy,pi,ebb_min,            &
   endif
 end subroutine diurnal_cycle
 
-end module module_wildfire_smoke_emissions
+end module module_fire_emissions
