@@ -331,6 +331,7 @@ contains
     REAL(RKIND) :: rhoa
     REAL(RKIND) :: reason
     INTEGER   :: i, j, n
+    logical   :: dust_debug = .false.
 
     ! Constant of proportionality from Marticorena et al, 1997 (unitless)
     ! Arguably more ~consistent~ fudge than alpha, which has many walnuts
@@ -358,7 +359,7 @@ contains
                                 erod, R, airden, ustar, uthres, alpha, gamma, kvhmax, &
                                 g0, RHOSOIL, emit,reason,dust_drylimit_factor)
 
-    if ( isnan(emit) ) then
+    if ( isnan(emit) .and. dust_debug ) then
        write(*,*),'emit was NaN, inputs: smois,massfrac(1),massfrac(3), massfrac(2), &
                                 erod, R, airden, ustar, uthres, alpha, gamma, kvhmax, &
                                 g0, RHOSOIL',smois,massfrac(1),massfrac(3), massfrac(2), &
@@ -366,7 +367,8 @@ contains
                                 g0, RHOSOIL
        reason = -5._RKIND
     endif
-    if ( emit == 0 ) then
+
+    if ( emit == 0 .and. dust_debug ) then
        write(*,*),'emit was 0, inputs: smois,massfrac(1),massfrac(3), massfrac(2), &
                                 erod, R, airden, ustar, uthres, alpha, gamma, kvhmax, &
                                 g0, RHOSOIL',smois,massfrac(1),massfrac(3), massfrac(2), &
