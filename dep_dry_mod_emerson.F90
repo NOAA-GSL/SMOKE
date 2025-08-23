@@ -11,6 +11,7 @@ module dep_dry_mod_emerson
   use dep_data_mod     
   use mpas_smoke_config, only : n_dbg_lines
   use mpas_smoke_init
+  use mpas_timer, only : mpas_timer_start, mpas_timer_stop
 
   implicit none
 
@@ -19,8 +20,8 @@ module dep_dry_mod_emerson
   public :: dry_dep_driver_emerson
 
 contains
-    subroutine dry_dep_driver_emerson(rmol,ustar,znt,num_chem,ddvel,vgrav,   &
-               chem,delz,snowh,t_phy,p_phy,rho_phy,ivgtyp,g0,dt,             &
+    subroutine dry_dep_driver_emerson(rmol,ustar,znt,num_chem,ddvel,   &
+               chem,delz,snowh,t_phy,p_phy,rho_phy,ivgtyp,gravity,dt,             &
                drydep_flux,tend_chem_settle,dbg_opt,settling_opt,            &
                ids,ide, jds,jde, kds,kde,                                    &
                ims,ime, jms,jme, kms,kme,                                    &
@@ -48,22 +49,17 @@ contains
        INTEGER, DIMENSION(ims:ime,jms:jme), INTENT(IN) ::  ivgtyp          
        REAL(RKIND), DIMENSION( ims:ime, kms:kme, jms:jme, 1:num_chem ),  &
                                              INTENT(INOUT ) :: chem
-       REAL(RKIND), INTENT(IN) :: g0,dt
+       REAL(RKIND), INTENT(IN) :: gravity,dt
        LOGICAL, INTENT(IN) :: dbg_opt
        INTEGER, INTENT(IN) :: settling_opt
  !
  ! Output arrays
        REAL(RKIND), DIMENSION( ims:ime, jms:jme, 1:num_chem ), INTENT(INOUT) :: ddvel
-       REAL(RKIND), DIMENSION( ims:ime, kms:kme, jms:jme, 1:num_chem), &
-                                                              INTENT(OUT)   :: vgrav
+!       REAL(RKIND), DIMENSION( ims:ime, kms:kme, jms:jme, 1:num_chem), &
+!                                                              INTENT(OUT)   :: vgrav
        REAL(RKIND), DIMENSION( ims:ime, jms:jme, 1:num_chem ), INTENT(OUT)   :: drydep_flux
        REAL(RKIND), DIMENSION( ims:ime, kms:kme, jms:jme, 1:num_chem), INTENT(OUT) :: tend_chem_settle
  ! Local
-       REAL(RKIND), DIMENSION( ims:ime , jms:jme )  :: aer_res
-       REAL(RKIND), DIMENSION( num_chem ) :: cblk
- ! Modpar variables, mass, density, diameter, knudsen number, mean free path
-       REAL(RKIND) :: pmasssn,pmassa,pmassc,pdensn,pdensa,pdensc,      &
-                          dgnuc,dgacc,dgcor,knnuc,knacc,kncor,xlm
        real(RKIND) :: Cc                      ! Cunningham/slip correction factor [-]
        real(RKIND) :: DDp, Eb                 ! Brownian diffusion []
        real(RKIND) :: Eim                     ! Impaction []
@@ -72,163 +68,155 @@ contains
        real(RKIND) :: St                      ! Stokes number []
        real(RKIND) :: vg                      ! gravitational settling [cm/s]
        real(RKIND) :: A, eps0, dumalnsg       ! land surface params [-]
-       real(RKIND) :: amu, amu_corrected      ! dynamic viscosity [g/s]
+!       real(RKIND) :: amu, amu_corrected      ! dynamic viscosity [g/s]
        real(RKIND) :: airkinvisc              ! Air kinetic viscosity [cm2/s]
        real(RKIND) :: freepath                ! Air molecular freepath [cm]
        real(RKIND) :: dp                      ! aerosol diameter [cm]
        real(RKIND) :: aerodens                ! aerosol density [g/cm3] 
        real(RKIND) :: Rs                      ! Surface resistance
-       real(RKIND) :: vgpart
        real(RKIND) :: growth_fac,vsettl,dtmax,conver,converi,dzmin
        real(RKIND) :: rmol_local
-       real(RKIND), dimension( kts:kte) :: rho_col, delz_col
-       real(RKIND), dimension(num_chem)    :: dt_settl, chem_before, chem_after
-       real(RKIND), dimension( kts:kte, num_chem ) :: cblk_col, vg_col
-       integer, dimension(num_chem) :: ndt_settl
+       real(RKIND) :: aer_res                 ! Aerodynmaic resistance
+       real(RKIND), dimension( kts:kte) :: rho_col, delz_col_flip, cblk_col, vg_col
+       real(RKIND) :: dt_settl
+    
+       integer     :: ndt_settl
        integer :: i, j, k, ntdt, nv
        integer :: icall=0
        real(RKIND), DIMENSION(ims:ime,jms:jme), INTENT(IN) ::  xlat,xlong
 !> -- Gas constant
-       real(RKIND), parameter :: RSI = 8.314510
+       real(RKIND), parameter :: RSI = 8.314510_RKIND
+       real(RKIND), parameter :: one_over_dyn_visc = 1.e5_RKIND
+       real(RKIND) :: four_ninths, g100
 
-       growth_fac = 1.0
-       conver=1.e-9
-       converi=1.e9
-       tend_chem_settle = 0.
+       logical, parameter :: do_timing = .false.
+
+       integer, parameter :: max_iter_settle = 10
+
+       real(RKIND) :: ust
+
+       growth_fac        = 1._RKIND
+       conver            = 1.e-9_RKIND
+       converi           = 1.e9_RKIND
+       tend_chem_settle  = 0._RKIND
+       ddvel             = 0._RKIND
+       four_ninths       = 4._RKIND / 9._RKIND
+       g100             = gravity * 1.e2_RKIND
  
        if (mod(int(curr_secs),1800) .eq. 0) then
            icall = 0
        endif
+       do nv = 1, num_chem
+          if (nv .eq. p_ch4) cycle  ! At some point we'll do something different for gasses
+          ! Convert diameter to cm and aerodens to g/cm3
+          dp       = aero_diam(nv) * 100._RKIND
+          aerodens = aero_dens(nv) * 1.e-3_RKIND
 
-       do j = jts, jte
+          do j = jts, jte
           do i = its, ite
-             aer_res(i,j) = 0.0
+   !          if  (do_timing) call mpas_timer_start('first_K')
              rmol_local = rmol(i,j)
-             do k = kts, kte
-                delz_col(k) = delz(i,k,j)
-                rho_col(k)  = rho_phy(i,k,j)
-                do nv = 1, num_chem
-                   cblk(nv) = chem(i,k,j,nv)
-                   if ( k == kts ) then
-                      ddvel(i,j,nv) = 0._RKIND
-                      dt_settl(nv)  = 0._RKIND
-                   endif ! k==kts
-                end do ! nv
-                ! *** U.S. Standard Atmosphere 1962 page 14 expression
-                !     for dynamic viscosity = beta * T * sqrt(T) / ( T + S)
-                !     where beta = 1.458e-6 [ kg sec^-1 K**-0.5 ], s = 110.4 [ K ].
-                amu = 1.458E-6 * t_phy(i,k,j) * sqrt(t_phy(i,k,j)) / ( t_phy(i,k,j) + 110.4 )
-                ! Aerodynamic resistance
-                call depvel( rmol_local, dep_ref_hgt, znt(i,j), ustar(i,j), vgpart, aer_res(i,j) )
-                ! depvel uses meters, need to convert to s/cm
-                aer_res(i,j) = max(aer_res(i,j)/100._RKIND,0._RKIND) 
-                ! Air kinematic viscosity (cm^2/s)
-                airkinvisc = ( 1.8325e-4 * ( 416.16 / ( t_phy(i,k,j) + 120.0 ) ) *   &
-                             ( ( t_phy(i,k,j) / 296.16 )**1.5 ) ) / ( rho_phy(i,k,j) / 1.e3 ) ! Convert density to mol/cm^3
-                ! Air molecular freepath (cm)  ! Check against XLM from above
-                freepath = 7.39758e-4 * airkinvisc / sqrt( t_phy(i,k,j) )
-                do nv = 1, num_chem
+             ! Aerodynamic resistance
+             ! depvel uses meters, need to convert to s/cm
+             call depvel( rmol_local, dep_ref_hgt, znt(i,j), ustar(i,j), aer_res )
+             ust        = ustar(i,j)*1.e2_RKIND
+             !aer_res(i,j) = max(aer_res(i,j)/100._RKIND,0._RKIND) 
+             ! MODIS type lu, large roughness lengths (e.g., urban or forest)
+             ! -----------------------------------------------------------------------
+             ! *** TO DO -- set A and eps0 for all land surface types *** !!!
+             ! -----------------------------------------------------------------------
+             if ( ivgtyp(i,j) .eq. 13 .or. ivgtyp(i,j) .le. 5 ) then ! Forest
+                A = A_for
+                eps0 = eps0_for
+             else if ( ivgtyp(i,j) .eq. 17 ) then ! water
+                A = A_wat
+                eps0 = eps0_wat
+             else ! otherwise
+                A = A_grs
+                eps0 = eps0_grs
+             end if
+             ! Set if snow greater than 1 cm
+           
+                do k = kts, kte
+                   delz_col_flip(k) = delz(i,kte-k+kts,j)
+                   rho_col(k)  = rho_phy(i,k,j) * 1.E-3_RKIND
+                   ! Air kinematic viscosity (cm^2/s)
+                   airkinvisc  = ( 1.8325e-4_RKIND * ( 416.16_RKIND / ( t_phy(i,k,j) + 120._RKIND) ) *   &
+                                ( ( t_phy(i,k,j) / 296.16_RKIND )**1.5_RKIND ) ) / rho_col(k) ! Convert density to mol/cm^3
+                   ! Air molecular freepath (cm)  
+                   freepath    = 7.39758e-4_RKIND * airkinvisc / sqrt( t_phy(i,k,j) )
+      
+                   cblk_col(k) = chem(i,k,j,nv)
                    !
-                   dp = aero_diam(nv)
-                   aerodens = aero_dens(nv) 
-                   ! Convert diameter to cm and aerodens to g/cm3
-                   aerodens = aerodens / 1000._RKIND
-                   dp = dp * 100._RKIND
                    ! Cunningham correction factor
-                   Cc = 1. + 2. * freepath / dp * ( 1.257 + 0.4*exp( -0.55 * dp / freepath ) )
-                   ! Corrected dynamic viscosity (used for settling)
-                   amu_corrected = amu / Cc
+                   Cc = 1._RKIND + 2._RKIND * freepath / dp * ( 1.257_RKIND + 0.4_RKIND*exp( -0.55_RKIND * dp / freepath ) )
                    ! Gravitational Settling
-                   vg = aerodens * dp * dp * gravity * 100. * Cc / &       ! Convert gravity to cm/s^2
-                          ( 18. * airkinvisc * ( rho_phy(i,k,j) / 1.e3 ) ) ! Convert density to mol/cm^3
+                   vg = aerodens * dp * dp * g100 * Cc / &       ! Convert gravity to cm/s^2
+                          ( 18._RKIND * airkinvisc * rho_col(k) ) ! Convert density to mol/cm^3
                    ! -- Rest of loop for the surface when deposition velocity needs to be cacluated
+                   !vgrav(i,k,j,nv) = vg
+                   ! Fill column variables
+                   vg_col(k)   = vg
                    if ( k == kts ) then
                       ! Brownian Diffusion
-                      DDp = ( boltzmann * t_phy(i,k,j) ) * Cc / (3. * pi * airkinvisc * ( rho_phy(i,k,j) / 1.e3 )  * dp) ! Convert density to mol/cm^3
+                      DDp = ( boltzmann * t_phy(i,k,j) ) * Cc / (3._RKIND * pi * airkinvisc * rho_col(k)  * dp) ! Convert density to mol/cm^3
                       ! Schmit number
                       Sc = airkinvisc / DDp
                       ! Brownian Diffusion
-                      Eb = Cb * Sc**(-0.666666667)
+                      Eb = Cb * Sc**(-0.666666667_RKIND)
                       ! Stokes number
-                      St = ( 100. * ustar(i,j) ) * ( 100.* ustar(i,j) ) * vg / airkinvisc / ( gravity * 100.) ! Convert ustar to cm/s, gravity to cm/s^2
+                      St = ust*ust * vg / airkinvisc / g100 ! Convert ustar to cm/s, gravity to cm/s^2
                       ! Impaction 
-                      Eim = Cim * ( St / ( alpha + St ) )**1.7
-                      ! MODIS type lu, large roughness lengths (e.g., urban or forest)
-                      ! -----------------------------------------------------------------------
-                      ! *** TO DO -- set A and eps0 for all land surface types *** !!!
-                      ! -----------------------------------------------------------------------
-                      if ( ivgtyp(i,j) .eq. 13 .or. ivgtyp(i,j) .le. 5 ) then ! Forest
-                         A = A_for
-                         eps0 = eps0_for
-                      else if ( ivgtyp(i,j) .eq. 17 ) then ! water
-                         A = A_wat
-                         eps0 = eps0_wat
-                      else ! otherwise
-                         A = A_grs
-                         eps0 = eps0_grs
-                      end if
-                      ! Set if snow greater than 1 cm
+                      Eim = Cim * ( St / ( alpha + St ) )**1.7_RKIND
                       ! Interception
                       Ein = Cin * ( dp / A )**vv
                       ! Surface resistance
-                      Rs = 1. / ( ( ustar(i,j) * 100.) * ( Eb + Eim + Ein) * eps0 ) ! Convert ustar to cm/s
+                      Rs = 1._RKIND / ( ust * ( Eb + Eim + Ein) * eps0 ) ! Convert ustar to cm/s
                       ! Compute final ddvel = aer_res + RS, set max at max_dep_vel in dep_data_mod.F[ m/s]
                       ! The /100. term converts from cm/s to m/s, required for MYNN.
                       if ( settling_opt .gt. 0 ) then
-                         ddvel(i,j,nv) = max(min( ( vg + 1./(aer_res(i,j)+Rs) )/100., max_dep_vel),0._RKIND)
-                         if (nv .eq. p_ch4) ddvel(i,j,nv) = 0.0_RKIND
+                            ddvel(i,j,nv) = max(min( ( vg + 1._RKIND / (aer_res+Rs) )*1.e-2_RKIND, max_dep_vel),0._RKIND)
                       else
-                         ddvel(i,j,nv) = max(min( ( 1./(aer_res(i,j)+Rs) )/100., max_dep_vel),0._RKIND)
-                         if (nv .eq. p_ch4) ddvel(i,j,nv) = 0.0_RKIND
+                             ddvel(i,j,nv) = max(min( ( 1._RKIND / (aer_res+Rs) )*1.e-2_RKIND, max_dep_vel),0._RKIND)
                       endif
                       if ( dbg_opt .and. (icall .le. n_dbg_lines) ) then
                          icall = icall + 1
                       endif
-                      drydep_flux(i,j,nv) = chem(i,kts,j,nv)*rho_phy(i,k,j)*ddvel(i,j,nv)/100.0*dt
+                      drydep_flux(i,j,nv) = chem(i,kts,j,nv)*rho_col(k)*ddvel(i,j,nv)*1.e-2_RKIND*dt*1.e3_RKIND
                    endif ! k == kts
-                   vgrav(i,k,j,nv) = vg
-                   ! Fill column variables
-                   cblk_col(k,nv) = cblk(nv)
-                   vg_col(k,nv)   = vg
-                enddo ! nv
-             enddo ! k
-             ! -- Get necessary info for settling
-             ! -- Determine the maximum time-step satisying the CFL condition:
-             dzmin = minval(delz_col)
-             ntdt=INT(dt)
-             do nv = 1, num_chem
-               ! -- NOTE, diameters and densities are NOT converted to cm and g/cm3 like above
-               ! -- dt_settl calculations (from original coarsepm_settling)
-               dp = aero_diam(nv)
-               aerodens = aero_dens(nv)
-               ! 1.5E-5 = dyn_visc --> dust_data_mod.F90
-               vsettl = 2.0 / 9.0 * g0 * aerodens * ( growth_fac * ( 0.5 * dp ))**2.0 / ( 0.5 * 1.5E-5 )
-               dtmax = dzmin / vsettl
-               ndt_settl(nv) = MAX( 1, INT( ntdt /dtmax) )
-               ! Limit maximum number of iterations
-               IF (ndt_settl(nv) > 12) ndt_settl(nv) = 12 
-               dt_settl(nv) = REAL(ntdt,kind=RKIND) /REAL(ndt_settl(nv),kind=RKIND)
-             enddo
-             ! Perform gravitational settling if desired
-             if ( settling_opt .gt. 0 ) then
-                call particle_settling(cblk_col,rho_col,delz_col,vg_col,dt_settl,ndt_settl,num_chem,kts,kte)
-                ! Calculate the tendency to send back to MYNN
-                do nv= 1, num_chem
-                   if ( nv .eq. p_ch4 ) cycle
+                enddo ! k
+   !          if  (do_timing) call mpas_timer_stop('first_K')
+   !          if  (do_timing) call mpas_timer_start('second_K')
+                if ( settling_opt .gt. 0 ) then
+                   ! -- Get necessary info for settling
+                   ! -- Determine the maximum time-step satisying the CFL condition:
+                   dzmin = minval(delz_col_flip)
+                   ntdt=INT(dt)
+                   ! -- NOTE, diameters and densities are NOT converted to cm and g/cm3 like above
+                   ! -- dt_settl calculations (from original coarsepm_settling)
+                   ! 1.5E-5 = dyn_visc --> dust_data_mod.F90
+                   vsettl = four_ninths * gravity * aero_dens(nv) * ( growth_fac * ( 0.5_RKIND * aero_diam(nv) ))**2.0_RKIND * one_over_dyn_visc
+                   dtmax = dzmin / vsettl
+                   ndt_settl = MAX( 1, INT( ntdt /dtmax) )
+                   ! Limit maximum number of iterations
+                   IF (ndt_settl > max_iter_settle) ndt_settl = max_iter_settle
+                   dt_settl = REAL(ntdt,kind=RKIND) /REAL(ndt_settl,kind=RKIND)
+!                   Perform gravitational settling if desired
+                   call particle_settling(cblk_col,rho_col,delz_col_flip,vg_col,dt_settl,ndt_settl,kts,kte)
+                   ! Calculate the tendency to send back to MYNN
                    do k = kts, kte
-                      tend_chem_settle(i,k,j,nv) = cblk_col(k,nv) - chem(i,k,j,nv)
-                      if (nv .eq. p_ch4) tend_chem_settle(i,k,j,nv) = 0.0_RKIND
-!                      chem(i,k,j,nv)             = cblk_col(k,nv)
+                      tend_chem_settle(i,k,j,nv) = cblk_col(k) - chem(i,k,j,nv)
                    enddo ! k
-                enddo ! nv
-             endif
-        end do ! j
-        end do ! i
+                endif ! settling opt
+   !          if  (do_timing) call mpas_timer_stop('second_K')
+          end do ! j
+          end do ! i
+       enddo ! nv
 end subroutine dry_dep_driver_emerson
 !
 !--------------------------------------------------------------------------------
 !
-subroutine depvel( rmol, zr, z0, ustar, vgpart, aer_res )
+subroutine depvel( rmol, zr, z0, ustar, aer_res )
 !--------------------------------------------------
 !     THIS FUNCTION HAS BEEN DESIGNED TO EVALUATE AN UPPER LIMIT
 !     FOR THE POLLUTANT DEPOSITION VELOCITY AS A FUNCTION OF THE
@@ -260,7 +248,7 @@ subroutine depvel( rmol, zr, z0, ustar, vgpart, aer_res )
 ! .. Scalar Arguments ..
 !--------------------------------------------------
         REAL(RKIND), intent(in)    :: ustar, z0, zr
-        REAL(RKIND), intent(out)   :: vgpart, aer_res
+        REAL(RKIND), intent(out)   :: aer_res
         REAL(RKIND), intent(inout) :: rmol
 !--------------------------------------------------
 ! .. Local Scalars ..
@@ -281,18 +269,18 @@ subroutine depvel( rmol, zr, z0, ustar, vgpart, aer_res )
 !             1/L = 0 NEUTRAL
 !             1/L > 0 STABLE
 !--------------------------------------------------
-        if(abs(rmol) < 1.E-6 ) rmol = 0.
-        IF (rmol<0) THEN
-          ar = ((1.0-9.0*zr*rmol)**(0.25)+0.001)**2
-          ao = ((1.0-9.0*z0*rmol)**(0.25)+0.001)**2
-          polint = 0.74*(alog((ar-1.0)/(ar+1.0))-alog((ao-1.0)/(ao+1.0)))
-        ELSE IF (rmol==0.) THEN
-          polint = 0.74*alog(zr/z0)
+        if(abs(rmol) < 1.E-6 ) rmol = 0._RKIND
+        IF ( rmol < 0._RKIND ) THEN
+          ar = ((1._RKIND-9._RKIND*zr*rmol)**(0.25)+0.001_RKIND)**2.
+          ao = ((1._RKIND-9._RKIND*z0*rmol)**(0.25)+0.001_RKIND)**2.
+          polint = 0.74_RKIND*(alog((ar-1._RKIND)/(ar+1._RKIND))-alog((ao-1._RKIND)/(ao+1._RKIND)))
+        ELSEIF ( rmol==0._RKIND ) THEN
+          polint = 0.74_RKIND*alog(zr/z0)
         ELSE
           polint = 0.74_RKIND*alog(zr/z0) + 4.7_RKIND*rmol*(zr-z0)
         END IF
-        vgpart = ustar*vk/polint
-        aer_res = polint/(karman*max(ustar,1.0e-4))
+        !vgpart = ustar*vk/polint
+        aer_res = polint/(karman*max(ustar,1.0e-4_RKIND)) * 1.e-2_RKIND ! convert to s/cm
 end subroutine depvel
 !
 !--------------------------------------------------------------------------------
@@ -300,44 +288,36 @@ end subroutine depvel
 !
 !--------------------------------------------------------------------------------
 !
-subroutine particle_settling(cblk,rho_phy,delz,vg,dt_settl,ndt_settl,num_chem,kts,kte)
+subroutine particle_settling(cblk,rho_phy,delz_flip,vg,dt_settl,ndt_settl,kts,kte)
      IMPLICIT NONE
      
-     INTEGER, INTENT(IN ) :: kts, kte, num_chem
-     REAL(RKIND), DIMENSION(kts:kte), INTENT (IN)  :: rho_phy, delz
-     REAL(RKIND), DIMENSION(kts:kte,num_chem), INTENT(IN) :: vg
-     REAL(RKIND), DIMENSION(kts:kte,num_chem), INTENT(INOUT) :: cblk
-     REAL(RKIND), DIMENSION(num_chem), INTENT(IN) :: dt_settl
-     INTEGER, DIMENSION(num_chem), INTENT(IN) :: ndt_settl
+     INTEGER, INTENT(IN ) :: kts, kte
+     REAL(RKIND), DIMENSION(kts:kte), INTENT (IN)  :: rho_phy, delz_flip
+     REAL(RKIND), DIMENSION(kts:kte), INTENT(IN) :: vg
+     REAL(RKIND), DIMENSION(kts:kte), INTENT(INOUT) :: cblk
+     REAL(RKIND), INTENT(IN) :: dt_settl
+     INTEGER,INTENT(IN) :: ndt_settl
 !
 !--- Local------
-     INTEGER :: k,nv,n,l2
+     INTEGER :: k,n,l2
      REAL(RKIND) :: temp_tc, transfer_to_below_level, vd_wrk1
-     REAL(RKIND), DIMENSION(kts:kte) :: delz_flip 
-     
-     do k = kts,kte
-        delz_flip(k) = delz(kte-k+kts)
-     enddo
 
-     do nv = 1, num_chem
-     if ( nv .eq. p_ch4 ) cycle
-     do n = 1,ndt_settl(nv)
-     transfer_to_below_level = 0.0
+     do n = 1,ndt_settl
+     transfer_to_below_level = 0._RKIND
      do k = kte,kts,-1
         l2 = kte - k + 1
      
-        temp_tc = cblk(k,nv)
+        temp_tc = cblk(k)
      
-        vd_wrk1 = dt_settl(nv) * vg(k,nv)/100. / delz_flip(l2)               ! convert vg to m/s
+        vd_wrk1 = dt_settl * vg(k)*1.e-2_RKIND / delz_flip(l2)               ! convert vg to m/s
      
-        cblk(k,nv)= cblk(k,nv) * (1. - vd_wrk1) + transfer_to_below_level
+        cblk(k)= cblk(k) * (1._RKIND - vd_wrk1) + transfer_to_below_level
         if (k.gt.kts) then
             transfer_to_below_level =(temp_tc*vd_wrk1)*((delz_flip(l2) &
                         *rho_phy(k))/(delz_flip(l2+1)*rho_phy(k-1)))          ! [ug/kg]
         endif
      enddo ! k
      enddo ! n
-     enddo ! nv
 end subroutine particle_settling
 
 !

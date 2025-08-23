@@ -31,7 +31,7 @@ contains
 
     subroutine mpas_smoke_driver(                                                            &
            num_chem              , chemistry_start             , chem           ,            &    
-           kemit                 , kbio, kfire, kvol, index_smoke_fine, index_smoke_coarse,  &
+           kanthro, kbio, kfire, kvol, index_smoke_fine, index_smoke_coarse,                 &
            index_dust_fine       , index_dust_coarse           ,                             &
            index_ch4             , index_e_bb_in_ch4           , index_e_bb_out_ch4,         &
            index_e_bb_in_smoke_fine, index_e_bb_in_smoke_coarse,                             &
@@ -96,7 +96,7 @@ contains
     integer,intent(in):: ktau,nblocks
 ! Dimensions and indexes
     integer,intent(in):: nsoil, nlcat, num_chem, chemistry_start
-    integer,intent(in):: kemit, kbio, kfire, kvol
+    integer,intent(in):: kanthro, kbio, kfire, kvol
     integer,intent(in):: num_e_bb_in, num_e_bb_out, num_e_dust_out
 ! 2D mesh arguments
     real(RKIND),intent(in), dimension(ims:ime, jms:jme)             :: xlat, xlong, dxcell, area, xland   ! grid
@@ -442,18 +442,17 @@ contains
     if (addsmoke_flag == 1) then
      call mpas_log_write( ' Calling add_emis_burn')
      call add_emis_burn(dt,dz8w,rho_phy,pi,ebb_min,                   &
-! Pass whole chem array
+                        chem,num_chem,                                &
                         julday,gmt,xlat,xlong,                        &
                         fire_end_hr, peak_hr,curr_secs,               &
                         coef_bb_dc,fire_hist,hwp,hwp_day_avg,         &
                         swdown,ebb_dcycle,ebu,ebu_coarse,ebu_ch4,     &
-                        fire_type,   &
+                        fire_type,                                    &
                         qv, add_fire_moist_flux,                      &
                         bb_emis_scale_factor, aod3d_smoke,            &
                         ids,ide, jds,jde, kds,kde,                    &
                         ims,ime, jms,jme, kms,kme,                    &
-                        its,ite, jts,jte, kts,kte,                    &
-                        smoke=chem(:,:,:,p_smoke_fine)                )
+                        its,ite, jts,jte, kts,kte                     )
     endif
   endif ! if do_mpas_smoke
 
@@ -500,7 +499,7 @@ contains
      ! Set up the arrays if this is the first time through
      call mpas_log_write( ' Calling dry_dep_driver_emerson')
      call dry_dep_driver_emerson(rmol,ust,znt,num_chem,ddvel,         &
-        vgrav,chem,dz8w,snowh,t_phy,p_phy,rho_phy,ivgtyp,g,dt,        &
+        chem,dz8w,snowh,t_phy,p_phy,rho_phy,ivgtyp,g,dt,              &
         drydep_flux_local,tend_chem_settle,dbg_opt,                   &
         pm_settling,                                                  &
         ids,ide, jds,jde, kds,kde,                                    &
@@ -519,7 +518,7 @@ contains
  !>- large-scale wet deposition
     if (wetdep_ls_opt == 1) then
        call mpas_log_write( ' Calling wetdep_ls')
-       call  wetdep_ls(dt,chem,rainncv,qv,                            &
+       call  wetdep_ls(dt,g,chem,rainncv,qv,                          &
                      rho_phy,num_chem,dz8w,vvel,p_phy,                &
                      wetdep_ls_alpha,                                 &
                      wetdep_resolved,                                 &
