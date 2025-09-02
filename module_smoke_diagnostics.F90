@@ -32,10 +32,12 @@ contains
   REAL(RKIND), DIMENSION(ims:ime,kms:kme,jms:jme), INTENT(IN) :: rho_phy, dz8w
   REAL(RKIND), DIMENSION(ims:ime,kms:kme,jms:jme,1:num_chem), INTENT(IN) :: chem
   REAL(RKIND), DIMENSION(ims:ime,kms:kme,jms:jme), INTENT(INOUT) :: aod3d
-  
-  real(RKIND) :: ext
-  integer:: i,k,j,nv
 
+  real(RKIND) :: ext
+
+  integer:: i,k,j,nv
+  
+  aod3d(:,:,:) = 0._RKIND
   do nv = 1, num_chem
   if ( nv .eq. p_ch4 ) cycle
   ext = sc_eff(nv) + ab_eff(nv)
@@ -54,7 +56,7 @@ contains
                                   blcldw,blcldi,                    &
                                   rho_phy,wind10m,wind,             &
                                   rh2m,rh,qv,t2m,t,                 &
-                                  coszen,vis,extcoef55,             &
+                                  coszen,extcoef55,vis,             &
                                   ids,ide, jds,jde, kds,kde,        &
                                   ims,ime, jms,jme, kms,kme,        &
                                   its,ite, jts,jte, kts,kte         )

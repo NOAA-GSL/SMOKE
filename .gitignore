@@ -8,3 +8,7 @@
 
 # All mod files
 *.mod
+
+# All copies in the top dir
+Makefile
+mpas_smoke_wrapper.F90
