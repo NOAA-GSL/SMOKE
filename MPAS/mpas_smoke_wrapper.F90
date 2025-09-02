@@ -7,13 +7,14 @@ module mpas_smoke_wrapper
    use mpas_kind_types
    use mpas_pool_routines
    use mpas_constants,        only: cp
+   use mpas_timer, only : mpas_timer_start, mpas_timer_stop
    use mpas_smoke_config
    use mpas_smoke_init 
    use module_plumerise,      only : ebu_driver
    use module_fire_emissions
    use module_add_emiss_burn, only : add_emis_burn
    use dep_dry_simple_mod,    only : dry_dep_driver_simple
-   use dep_dry_mod_emerson,   only : dry_dep_driver_emerson
+   use dep_dry_mod_emerson,   only : dry_dep_driver_emerson, particle_settling_wrapper
    use dep_data_mod,          only : aero_dry_dep_init
    use rad_data_mod,          only : aero_rad_init
    use module_wetdep_ls,      only : wetdep_ls
@@ -48,8 +49,8 @@ contains
            sep_in                ,                                                           &
            e_bb_in               , e_bb_out              , e_dust_out           ,            &
            num_e_bb_in           , num_e_bb_out          , num_e_dust_out       ,            &
-           ddvel                 , wetdep_resolved       , tend_chem_settle     ,            & 
-           do_mpas_smoke         , do_mpas_dust          ,                                   &
+           drydep_flux           , ddvel                 , wetdep_resolved      ,            &
+           tend_chem_settle      , do_mpas_smoke         , do_mpas_dust         ,            &
            calc_bb_emis_online   , bb_beta               ,                                   &
            hwp_method            , hwp_alpha             , wetdep_ls_opt        ,            &
            wetdep_ls_alpha       , plumerise_opt         , plume_wind_eff       ,            &
@@ -149,6 +150,7 @@ contains
     integer,intent(inout),dimension(ims:ime,jms:jme),optional      :: min_bb_plume, max_bb_plume
 ! 2D + chem output arrays
     real(RKIND),intent(inout), dimension(ims:ime, jms:jme, 1:num_chem),optional :: wetdep_resolved
+    real(RKIND),intent(inout), dimension(ims:ime, jms:jme, 1:num_chem),optional :: drydep_flux
     real(RKIND),intent(inout), dimension(ims:ime, jms:jme, 1:num_chem),optional :: ddvel
 ! 2D output arrays
     real(RKIND),intent(inout), dimension(ims:ime, jms:jme),optional                   :: vis
@@ -208,9 +210,8 @@ contains
     real(RKIND), parameter                            :: conv_frpi   = 1.e-06_RKIND  ! FRP conversion factor, MW to W
     real(RKIND), parameter                            :: conv_frei   = 1.e-06_RKIND  ! FRE conversion factor, MW-s to W-s
 !>- Dry deposition - temporary - move to output 
-    real(RKIND), dimension(ims:ime, jms:jme, 1:num_chem)          :: drydep_flux_local
-    real(RKIND), dimension(ims:ime, kms:kme, jms:jme, 1:num_chem) :: vgrav     ! gravitational settling velocit
-    real(RKIND), dimension(ims:ime, kms:kme, jms:jme)             :: thetav
+    real(RKIND), dimension(ims:ime, kms:kme, jms:jme, 1:num_chem) :: vg     ! gravitational settling velocity
+    real(RKIND), dimension(ims:ime, kms:kme, jms:jme)             :: thetav, dz8w_flip
 !> -- other
     real(RKIND)    :: theta
     real(RKIND)    :: curr_secs
@@ -229,6 +230,8 @@ contains
     real(RKIND), parameter :: frp_wthreshold = 1.e+9     ! Minimum FRP (Watts) to have plume rise in windy conditions
     real(RKIND), parameter :: fre_wthreshold = 1.e+9     ! Minimum FRE (Watt-seconds) to have plume rise in windy conditions
     real(RKIND), parameter :: ebb_min        = 1.e-3     ! Minimum smoke emissions (ug/m2/s)
+
+    logical, parameter :: do_timing = .false.
 
     errmsg = ''
     errflg = 0
@@ -260,6 +263,7 @@ contains
     julday = int(julian)
 
     call mpas_log_write( ' Calling smoke prep')
+    if  (do_timing) call mpas_timer_start('smoke_prep')
     !>- get ready for chemistry run
     call mpas_smoke_prep(                                                   &
         do_mpas_smoke,                                                      &
@@ -267,7 +271,8 @@ contains
         xland,xlat,xlong,ivgtyp,isltyp,landusef,                            & ! JLS TODO LANDUSEF /= VEGFRA?
         snowh,u10,v10,wind10m,t2m,dpt2m,mavail,hwp,hwp_day_avg,             &
         index_e_bb_in_smoke_fine,num_e_bb_in,kfire,e_bb_in,                 &
-        t_phy,u_phy,v_phy,p_phy,pi_phy,z_at_w,                              &     
+        t_phy,u_phy,v_phy,p_phy,pi_phy,z_at_w,                              &
+        dz8w,dz8w_flip,                                                     &
         rho_phy,qv,relhum,rh2m,rri,                                         &
         total_flashrate,                                                    &
         wind_phy,theta_phy,zmid,kpbl_thetav,                                &
@@ -276,6 +281,7 @@ contains
         ids,ide, jds,jde, kds,kde,                                          &
         ims,ime, jms,jme, kms,kme,                                          &
         its,ite, jts,jte, kts,kte)
+   if  (do_timing) call mpas_timer_stop('smoke_prep')
 
    if (ktau == 1) then
       call mpas_log_write( ' Initializing dry deposition parameterss ')
@@ -416,6 +422,7 @@ contains
     if (call_plume) call_plume = (mod(int(curr_secs), max(1, 60*plumerisefire_frq)) == 0) .or. (ktau == 2)
 
     ! compute wild-fire plumes
+    if  (do_timing) call mpas_timer_start('ebu_driver')
     if (call_plume) then
       call mpas_log_write( ' Calling ebu_driver')
       call ebu_driver (                                               &
@@ -437,9 +444,11 @@ contains
                  ebu=ebu                                              )                                                  
       if(errflg/=0) return
     end if
+    if  (do_timing) call mpas_timer_stop('ebu_driver')
 
     ! -- add biomass burning emissions at every timestep
     if (addsmoke_flag == 1) then
+    if  (do_timing) call mpas_timer_start('add_emiss_burn')
      call mpas_log_write( ' Calling add_emis_burn')
      call add_emis_burn(dt,dz8w,rho_phy,pi,ebb_min,                   &
                         chem,num_chem,                                &
@@ -454,10 +463,12 @@ contains
                         ims,ime, jms,jme, kms,kme,                    &
                         its,ite, jts,jte, kts,kte                     )
     endif
+    if  (do_timing) call mpas_timer_stop('add_emiss_burn')
   endif ! if do_mpas_smoke
 
   ! -- add sea salt emissions
     !if (do_mpas_ssalt) then
+    !if  (do_timing) call mpas_timer_start('seasalt_driver')
     ! call gocart_seasalt_driver (                                     &
     !         dt,rri,t_phy,u_phy,v_phy,                                &
     !         num_chem,chem,rho_phy,dz8w,u10,v10,                      &
@@ -469,9 +480,11 @@ contains
     !         ids,ide, jds,jde, kds,kde,                               &
     !         ims,ime, jms,jme, kms,kme,                               &
     !         its,ite, jts,jte, kts,kte                                )
+    !if  (do_timing) call mpas_timer_stop('seasalt_driver')
     !endif
 
     if ( do_mpas_dust ) then
+    if  (do_timing) call mpas_timer_start('dust_driver')
     call mpas_log_write( ' Calling dust driver')
 !    if ( dust_opt .eq. 5 ) then
     !-- compute dust (FENGSHA)
@@ -492,19 +505,28 @@ contains
             ims,ime, jms,jme, kms,kme,                                &
             its,ite, jts,jte, kts,kte                                 )
 !    end if
+    if  (do_timing) call mpas_timer_stop('dust_driver')
     end if
 
     !>-- compute dry deposition, based on Emerson et al., (2020)
     if (drydep_opt == 1) then
+    if  (do_timing) call mpas_timer_start('drydep_driver')
      ! Set up the arrays if this is the first time through
      call mpas_log_write( ' Calling dry_dep_driver_emerson')
      call dry_dep_driver_emerson(rmol,ust,znt,num_chem,ddvel,         &
         chem,dz8w,snowh,t_phy,p_phy,rho_phy,ivgtyp,g,dt,              &
-        drydep_flux_local,tend_chem_settle,dbg_opt,                   &
-        pm_settling,                                                  &
+        drydep_flux,tend_chem_settle,dbg_opt,                         &
+        pm_settling,vg,                                               &
         ids,ide, jds,jde, kds,kde,                                    &
         ims,ime, jms,jme, kms,kme,                                    &
-        its,ite, jts,jte, kts,kte, curr_secs, xlat, xlong             )
+        its,ite, jts,jte, kts,kte, curr_secs                          )
+    if  (do_timing) call mpas_timer_stop('drydep_driver')
+    if  (do_timing) call mpas_timer_start('settling')
+    if (pm_settling .gt. 0 ) then
+     call particle_settling_wrapper(tend_chem_settle,chem,rho_phy,dz8w_flip,vg,   &
+                 dt,kts,kte,its,ite,jts,jte,num_chem,ims,ime, jms,jme, kms,kme    )
+    endif
+    if  (do_timing) call mpas_timer_stop('settling')
     !>-- compute dry deposition based on simple parameterization (HRRR-Smoke)
     elseif (drydep_opt == 2) then
      call dry_dep_driver_simple(rmol,ust,ndvel,ddvel,                 &
@@ -517,6 +539,7 @@ contains
 
  !>- large-scale wet deposition
     if (wetdep_ls_opt == 1) then
+    if  (do_timing) call mpas_timer_start('wetdep_ls')
        call mpas_log_write( ' Calling wetdep_ls')
        call  wetdep_ls(dt,g,chem,rainncv,qv,                          &
                      rho_phy,num_chem,dz8w,vvel,p_phy,                &
@@ -525,6 +548,7 @@ contains
                      ids,ide, jds,jde, kds,kde,                       &
                      ims,ime, jms,jme, kms,kme,                       &
                      its,ite, jts,jte, kts,kte                        )
+    if  (do_timing) call mpas_timer_stop('wetdep_ls')
     endif
 
     !>-- output of MPAS-Smoke
@@ -574,12 +598,13 @@ contains
  end subroutine mpas_smoke_driver
 
  subroutine mpas_smoke_prep(                                                &
-        do_mpas_smoke, &
+        do_mpas_smoke,                                                      &
         ktau, nlcat,cp,ebb_dcycle,ebb_min,                                  &
         xland,xlat,xlong,ivgtyp,isltyp,vegfrac,                             &
         snowh,u10,v10,wind10m,t2m,dpt2m,wetness,hwp,hwp_day_avg,            &
         index_e_bb_in_smoke_fine,num_e_bb_in,kfire,e_bb_in,                 &
         t_phy,u_phy,v_phy,p_phy,pi_phy,z_at_w,                              &
+        dz8w,dz8w_flip,                                                     &
         rho_phy,qv,relhum,rh2m,rri,                                         &
         total_flashrate,                                                    &
         wind_phy,theta_phy,zmid,kpbl_thetav,                                &
@@ -587,7 +612,7 @@ contains
         lu_nofire, lu_qfire, lu_sfire, fire_type,                           &
         ids,ide, jds,jde, kds,kde,                                          &
         ims,ime, jms,jme, kms,kme,                                          &
-        its,ite, jts,jte, kts,kte)
+        its,ite, jts,jte, kts,kte                                           )
 
     !intent arguments:
     integer,intent(in):: ids,ide,jds,jde,kds,kde,                           &
@@ -604,9 +629,9 @@ contains
     real(RKIND),intent(in),   dimension(ims:ime, jms:jme) :: xland, xlat, xlong,                   &
                                         snowh, u10, v10, t2m, dpt2m, wetness
     real(RKIND),intent(in),   dimension(ims:ime, kms:kme, jms:jme) :: qv, z_at_w,                  &
-                                        p_phy, t_phy, u_phy, v_phy, pi_phy, rho_phy
+                                        p_phy, t_phy, u_phy, v_phy, pi_phy, rho_phy, dz8w
     real(RKIND),intent(out),  dimension(ims:ime, kms:kme, jms:jme) :: zmid, wind_phy,theta_phy,   &
-                                       relhum, rri
+                                       relhum, rri, dz8w_flip
     integer    ,intent(out),  dimension(ims:ime, jms:jme) :: fire_type, kpbl_thetav
     real(RKIND),intent(out),  dimension(ims:ime, jms:jme) :: lu_nofire, lu_qfire, lu_sfire
     real(RKIND),intent(out),  dimension(ims:ime, jms:jme) :: fire_hist, peak_hr, hwp_day_avg
@@ -694,6 +719,7 @@ contains
     do i = its,ite
        theta = t_phy(i,k,j) * (1.E5_RKIND/p_phy(i,k,j))**0.286_RKIND
        thetav(i,k,j) = theta * (1._RKIND + 0.61_RKIND * qv(i,k,j))
+       dz8w_flip(i,k,j)   = dz8w(i,kte-k+kts,j)
     enddo
     enddo
     enddo
