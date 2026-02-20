@@ -58,7 +58,7 @@ contains
            num_e_bb_in           , num_e_bb_out          , num_e_dust_out       ,            &
            drydep_flux           , ddvel                 , wetdep_resolved      ,            &
            tend_chem_settle      , do_mpas_smoke         , do_mpas_dust         ,            &
-           do_mpas_anthro        , &
+           do_mpas_anthro        , do_mpas_rwc           ,                                   &
            calc_bb_emis_online   , bb_beta               ,                                   &
            hwp_method            , hwp_alpha             , wetdep_ls_opt        ,            &
            wetdep_ls_alpha       , plumerise_opt         , plume_wind_eff       ,            &
@@ -67,7 +67,7 @@ contains
            add_fire_moist_flux   , plumerisefire_frq     , bb_qv_scale_factor   ,            &
            dust_alpha            , dust_gamma            , dust_drylimit_factor ,            &
            dust_moist_correction ,                                                           &
-           bb_input_prevh        , online_rwc_emis,   rwc_emis_scale_factor,                 &
+           bb_input_prevh        , rwc_emis_scale_factor,                                    &
            RWC_denominator       , RWC_annual_sum       ,                                    &
            RWC_annual_sum_smoke_fine, RWC_annual_sum_smoke_coarse,                           &
            RWC_annual_sum_unspc_fine, RWC_annual_sum_unspc_coarse,                           &
@@ -197,6 +197,7 @@ contains
      logical,intent(in)                :: do_mpas_smoke
      logical,intent(in)                :: do_mpas_dust
      logical,intent(in)                :: do_mpas_anthro
+     logical,intent(in)                :: do_mpas_rwc
      logical,intent(in)                :: calc_bb_emis_online
      integer,intent(in)                :: hwp_method
      real(RKIND),intent(in)            :: hwp_alpha
@@ -216,7 +217,6 @@ contains
      real(RKIND),intent(in)            :: dust_alpha, dust_gamma
      real(RKIND),intent(in)            :: dust_drylimit_factor, dust_moist_correction
      integer,intent(in)                :: bb_input_prevh
-     integer,intent(in)               :: online_rwc_emis
      real(kind=RKIND),intent(in)      :: rwc_emis_scale_factor
 
 !>- plume variables
