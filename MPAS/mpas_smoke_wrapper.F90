@@ -90,6 +90,7 @@ contains
            rainncv               , dpt2m                 , znt                  ,            &
            mavail                , g                     , vegfra               ,            &
            landusef              , cldfrac               , ktop_deep            ,            &
+           nwfa2d                , nifa2d                , do_mp_aero_emission  ,            &
            cp                    , rd                    , gmt                  ,            &
            ids       , ide       , jds       , jde       , kds       , kde      ,            &
            ims       , ime       , jms       , jme       , kms       , kme      ,            &
@@ -125,6 +126,7 @@ contains
     real(RKIND),intent(in), dimension(ims:ime, jms:jme)             :: coszen
     real(RKIND),intent(in), dimension(ims:ime, jms:jme)             :: raincv, rainncv, mavail                    
     real(RKIND),intent(inout), dimension(ims:ime, jms:jme)          :: rmol, ust
+    real(RKIND),intent(inout), dimension(ims:ime, jms:jme)          :: nwfa2d, nifa2d
 ! 2D Fire Input
     real(RKIND),intent(in), dimension(ims:ims, jms:jme), optional      :: totprcp_prev24, fire_end_hr,fmc_avg,     &
                                                                           efs_smold, efs_flam, efs_rsmold
@@ -199,6 +201,7 @@ contains
      logical,intent(in)                :: do_mpas_anthro
      logical,intent(in)                :: do_mpas_rwc
      logical,intent(in)                :: calc_bb_emis_online
+     logical,intent(in)                :: do_mp_aero_emission
      integer,intent(in)                :: hwp_method
      real(RKIND),intent(in)            :: hwp_alpha
      integer,intent(in)                :: wetdep_ls_opt
@@ -256,6 +259,11 @@ contains
 
     logical, parameter :: do_timing = .false.
 
+    integer,parameter  :: num_e_ss_out = 2 ! Just for sea-salt emission
+    integer,parameter  :: index_e_ss_out_ssalt_fine = 1, index_e_ss_out_ssalt_coarse = 2
+    real(RKIND), dimension(ims:ime, kms:kme, jms:jme, num_e_ss_out):: e_ss_out
+    real(RKIND), dimension(ims:ime, jms:jme):: em_dust, em_fire_oc, em_antho_oc, em_seas
+
     errmsg = ''
     errflg = 0
  
@@ -277,6 +285,12 @@ contains
 !
 !
 !
+
+    e_ss_out    = 0._RKIND
+    em_dust     = 0._RKIND
+    em_seas     = 0._RKIND
+    em_fire_oc  = 0._RKIND
+    em_antho_oc = 0._RKIND
 
     uspdavg2d   = 0._RKIND
     hpbl2d      = 0._RKIND
@@ -507,6 +521,21 @@ contains
     !         its,ite, jts,jte, kts,kte                                )
     !if  (do_timing) call mpas_timer_stop('seasalt_driver')
     !endif
+    if (do_mp_aero_emission) then
+    if  (do_timing) call mpas_timer_start('seasalt_driver')
+     call gocart_seasalt_driver (                                     &
+             dt,rri,t_phy,u_phy,v_phy,                                &
+             num_chem,chem,rho_phy,dz8w,u10,v10,                      &
+             ust,p8w,tskin,xland,xlat,xlong,area,g,                   &
+             e_ss_out,num_e_ss_out,                                   &
+             index_e_ss_out_ssalt_fine,                               &
+             index_e_ss_out_ssalt_coarse,pi,                          &
+             num_emis_seas,seas_opt,                                  &
+             ids,ide, jds,jde, kds,kde,                               &
+             ims,ime, jms,jme, kms,kme,                               &
+             its,ite, jts,jte, kts,kte                                )
+    if  (do_timing) call mpas_timer_stop('seasalt_driver')
+    endif
 
     if ( do_mpas_dust ) then
     if  (do_timing) call mpas_timer_start('dust_driver')
@@ -634,6 +663,28 @@ contains
     enddo
     enddo
     enddo
+
+    do j=jts,jte
+    do i=its,ite
+      em_dust     (i,j)=e_dust_out(i,kts,j,index_e_dust_out_dust_fine )     ! ug/m2/s
+      em_seas     (i,j)=e_ss_out  (i,kts,j,index_e_ss_out_ssalt_fine  )     ! ug/m2/s
+      em_fire_oc  (i,j)=e_bb_out  (i,kts,j,index_e_bb_out_smoke_fine  )     ! ug/m2/s
+      !if (xland(i,j) == 1.)then
+      em_antho_oc (i,j)=e_ant_out (i,kts,j,index_e_ant_out_unspc_fine )     ! ug/m2/s
+      em_antho_oc (i,j)=min(em_antho_oc (i,j)*0.2*0.05,0.002)
+      em_fire_oc  (i,j)=min(em_fire_oc  (i,j)*0.01,0.05)
+      em_seas     (i,j)=em_seas     (i,j)*0.05
+      !endif
+    enddo
+    enddo
+
+    if (do_mp_aero_emission) then
+      call  mp_aero_emission(em_dust,em_fire_oc,em_antho_oc,em_seas,        &
+            dt, xland, nwfa2d, nifa2d, rri, dz8w,                           &
+            ids,ide, jds,jde, kds,kde,                                      &
+            ims,ime, jms,jme, kms,kme,                                      &
+            its,ite, jts,jte, kts,kte                                       )
+    endif
     
  end subroutine mpas_smoke_driver
 
@@ -834,6 +885,65 @@ contains
 
   end subroutine mpas_smoke_prep
   
+  subroutine mp_aero_emission(em_dust,em_fire_oc,em_antho_oc,em_seas,       &
+        dt, land, nwfa2d, nifa2d, rri, dz8w,                                &
+        ids,ide, jds,jde, kds,kde,                                          &
+        ims,ime, jms,jme, kms,kme,                                          &
+        its,ite, jts,jte, kts,kte                                           )
+
+    integer,intent(in):: ids,ide,jds,jde,kds,kde,                           &
+                         ims,ime,jms,jme,kms,kme,                           &
+                         its,ite,jts,jte,kts,kte
+
+    real(RKIND),intent(in) :: dt
+    real(RKIND),intent(in), dimension(ims:ime, jms:jme):: em_dust,em_fire_oc,em_antho_oc,em_seas,land
+    real(RKIND),intent(in), dimension(ims:ime, kms:kme, jms:jme):: rri,dz8w
+    real(RKIND),intent(inout), dimension(ims:ime, jms:jme):: nwfa2d,nifa2d
+
+    real(RKIND),dimension(ims:ime, jms:jme):: daero_emis_wfa,daero_emis_ifa
+
+    real(RKIND), parameter :: pi  = 3.1415926
+    ! -- aerosol diameter to caluclate wfa & ifa (m)
+    real(RKIND), parameter :: mean_diameter1= 4.E-8, sigma1=1.8
+    real(RKIND), parameter :: mean_diameter2= 1.E-6, sigma2=1.8
+    !-- aerosol density to caluclate wfa & ifa (kg/m3)
+    real(RKIND), parameter :: density_dust= 2.6e+3, density_sulfate=1.8e+3
+    real(RKIND), parameter :: density_oc  = 1.4e+3, density_seasalt=2.2e+3
+
+    real(RKIND) :: fact_wfa, fact_ifa
+
+    integer i, j
+
+    nwfa2d(:,:) = 0.
+    nifa2d(:,:) = 0.
+    fact_wfa = 1.e-9*6.0/pi*exp(4.5*log(sigma1)**2)/mean_diameter1**3
+    fact_ifa = 1.e-9*6.0/pi*exp(4.5*log(sigma2)**2)/mean_diameter2**3
+
+    do i=its, ite
+    do j=jts, jte
+     daero_emis_wfa(i,j) = (em_fire_oc(i,j)+em_antho_oc(i,j))/density_oc + em_seas(i,j)/density_seasalt
+     daero_emis_ifa(i,j) = em_dust(i,j)/density_dust
+
+     daero_emis_wfa(i,j) = daero_emis_wfa(i,j)*fact_wfa*rri(i,1,j)/dz8w(i,1,j)
+     daero_emis_ifa(i,j) = daero_emis_ifa(i,j)*fact_ifa*rri(i,1,j)/dz8w(i,1,j)
+
+     nwfa2d(i,j)=daero_emis_wfa(i,j)
+     nifa2d(i,j)=daero_emis_ifa(i,j)
+
+     !-- mimicking dry deposition
+     if(land(i,j).eq.1)then
+      nwfa2d(i,j)    = nwfa2d(i,j)*(1. - 0.10*dt/86400.)
+      nifa2d(i,j)    = nifa2d(i,j)*(1. - 0.10*dt/86400.)
+     else
+      nwfa2d(i,j)    = nwfa2d(i,j)*(1. - 0.05*dt/86400.)
+      nifa2d(i,j)    = nifa2d(i,j)*(1. - 0.05*dt/86400.)
+     endif
+     nwfa2d(i,j)     = MIN(9999.E6,nwfa2d(i,j))
+     nifa2d(i,j)     = MIN(9999.E6,nifa2d(i,j))
+    enddo
+    enddo
+
+  end subroutine mp_aero_emission
 
 !> @}
   end module mpas_smoke_wrapper

@@ -208,7 +208,7 @@ contains
              chem(i,kts,j,p_dust_fine)  = chem(i,kts,j,p_dust_fine) + tc(1)*converi
              chem(i,kts,j,p_dust_coarse)= chem(i,kts,j,p_dust_coarse) + tc(5)*converi
 
-             e_dust_out(i,kts,j,index_e_dust_out_dust_fine  ) = reason_nodust !bems(1)
+             e_dust_out(i,kts,j,index_e_dust_out_dust_fine  ) = bems(1) !reason_nodust
              e_dust_out(i,kts,j,index_e_dust_out_dust_coarse) = bems(5)
           endif
        enddo
