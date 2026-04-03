@@ -25,7 +25,8 @@ OBJS = \
 	seas_ngac_mod.o \
 	seas_data_mod.o \
 	module_smoke_diagnostics.o \
-	module_fire_emissions.o
+	module_fire_emissions.o \
+	module_mp_aero_emissions.o
    
 
 MPAS_SMOKE: $(OBJS)
@@ -91,6 +92,7 @@ mpas_smoke_wrapper.o:      \
 	dust_fengsha_mod.o \
 	module_smoke_diagnostics.o \
 	module_fire_emissions.o \
+	module_mp_aero_emissions.o \
 	dep_data_mod.o \
 	rad_data_mod.o
 
@@ -105,6 +107,8 @@ ssalt_mod.o: \
 seas_data_mod.o:
 
 seas_ngac_mod.o:
+
+module_mp_aero_emissions.o:
 
 module_anthro_emissions.o: \
         mpas_smoke_init.o
