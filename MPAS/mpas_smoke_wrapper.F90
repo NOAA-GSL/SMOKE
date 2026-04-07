@@ -50,9 +50,7 @@ contains
            eco_id, efs_smold, efs_flam, efs_rsmold,fmc_avg,                                  &
            hfx_bb                , qfx_bb         ,  frac_grid_burned           ,            &
            min_bb_plume          , max_bb_plume   ,                                          &
-           sandfrac_in           , clayfrac_in           , uthres_in            ,            &
-           uthres_sg_in          , albedo_drag_in        , feff_in              ,            &
-           sep_in                ,                                                           &
+           sandfrac_in           , clayfrac_in    , uthres_in, rdrag_in, ssm_in,             &
            e_ant_in              , e_ant_out             ,                                   &
            num_e_ant_in          , num_e_ant_out         ,                                   &
            e_bb_in               , e_bb_out              , e_dust_out           ,            &
@@ -91,7 +89,7 @@ contains
            rainncv               , dpt2m                 , znt                  ,            &
            mavail                , g                     , vegfra               ,            &
            landusef              , cldfrac               , ktop_deep            ,            &
-           nwfa2d                , nifa2d                , do_mp_aero_emission  ,            &
+           nwfa2d                , nifa2d                , config_mp_aero_emission  ,        &
            cp                    , rd                    , gmt                  ,            &
            ids       , ide       , jds       , jde       , kds       , kde      ,            &
            ims       , ime       , jms       , jme       , kms       , kme      ,            &
@@ -164,7 +162,7 @@ contains
     integer, intent(in), optional :: index_ch4, index_e_bb_in_ch4, index_e_bb_out_ch4
 ! 2D dust input arrays 
     real(RKIND),intent(in), dimension(ims:ime, jms:jme),optional  :: sandfrac_in, clayfrac_in, uthres_in, &        ! dust (FENGSHA) input
-                                                                     uthres_sg_in, albedo_drag_in, feff_in, sep_in ! dust (FENGSHA) input
+                                                                     rdrag_in, ssm_in ! dust (FENGSHA) input
 ! 2D input/output arrays
     real(RKIND),intent(inout),dimension(ims:ime, jms:jme),optional :: frp_out, fre_out, EFs_map
     real(RKIND),intent(inout),dimension(ims:ime, jms:jme),optional :: hwp, coef_bb_dc
@@ -202,7 +200,7 @@ contains
      logical,intent(in)                :: do_mpas_anthro
      logical,intent(in)                :: do_mpas_rwc
      logical,intent(in)                :: calc_bb_emis_online
-     logical,intent(in)                :: do_mp_aero_emission
+     logical,intent(in)                :: config_mp_aero_emission
      integer,intent(in)                :: hwp_method
      real(RKIND),intent(in)            :: hwp_alpha
      integer,intent(in)                :: wetdep_ls_opt
@@ -522,7 +520,7 @@ contains
     !         its,ite, jts,jte, kts,kte                                )
     !if  (do_timing) call mpas_timer_stop('seasalt_driver')
     !endif
-    if (do_mp_aero_emission) then
+    if (config_mp_aero_emission) then
     if  (do_timing) call mpas_timer_start('seasalt_driver')
      call gocart_seasalt_driver (                                     &
              dt,rri,t_phy,u_phy,v_phy,                                &
@@ -543,13 +541,12 @@ contains
     call mpas_log_write( ' Calling dust driver')
 !    if ( dust_opt .eq. 5 ) then
     !-- compute dust (FENGSHA)
-       call gocart_dust_fengsha_driver(dt,ktau,chem,rho_phy,               &
+       call gocart_dust_fengsha_driver(dt,ktau,chem,rho_phy,          &
             smois,tslb,p8w,                                           &
             isltyp,snowh,xland,area,g,                                &
             ust,znt,                                                  &
             clayfrac_in,sandfrac_in,                                  &
-            uthres_in, uthres_sg_in,                                  &
-            albedo_drag_in, feff_in, sep_in,                          &
+            uthres_in, rdrag_in, ssm_in,                              &
             e_dust_out, num_e_dust_out,                               &
             index_e_dust_out_dust_fine,                               &
             index_e_dust_out_dust_coarse,                             &
@@ -667,19 +664,17 @@ contains
 
     do j=jts,jte
     do i=its,ite
-      em_dust     (i,j)=e_dust_out(i,kts,j,index_e_dust_out_dust_fine )     ! ug/m2/s
-      em_seas     (i,j)=e_ss_out  (i,kts,j,index_e_ss_out_ssalt_fine  )     ! ug/m2/s
-      em_fire_oc  (i,j)=e_bb_out  (i,kts,j,index_e_bb_out_smoke_fine  )     ! ug/m2/s
-      !if (xland(i,j) == 1.)then
-      em_antho_oc (i,j)=e_ant_out (i,kts,j,index_e_ant_out_unspc_fine )     ! ug/m2/s
+      em_dust     (i,j)=e_dust_out(i,kts,j,index_e_dust_out_dust_fine )*0.05     ! ug/m2/s
+      em_seas     (i,j)=e_ss_out  (i,kts,j,index_e_ss_out_ssalt_fine  )          ! ug/m2/s
+      em_fire_oc  (i,j)=e_bb_out  (i,kts,j,index_e_bb_out_smoke_fine  )          ! ug/m2/s
+      em_antho_oc (i,j)=e_ant_out (i,kts,j,index_e_ant_out_unspc_fine )          ! ug/m2/s
       em_antho_oc (i,j)=min(em_antho_oc (i,j)*0.2*0.05,0.002)
       em_fire_oc  (i,j)=min(em_fire_oc  (i,j)*0.01,0.05)
       em_seas     (i,j)=em_seas     (i,j)*0.05
-      !endif
     enddo
     enddo
 
-    if (do_mp_aero_emission) then
+    if (config_mp_aero_emission) then
       call  mp_aero_emission(em_dust,em_fire_oc,em_antho_oc,em_seas,        &
             dt, xland, nwfa2d, nifa2d, rri, dz8w,                           &
             ids,ide, jds,jde, kds,kde,                                      &
