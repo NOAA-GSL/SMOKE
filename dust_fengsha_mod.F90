@@ -419,6 +419,7 @@ contains
   subroutine DustEmissionFENGSHA(slc, clay, sand, silt,  &
                                   ssm, feff, airdens, ustar, uthrs, alpha, gamma, &
                                   kvhmax, grav, rhop, emissions,reason,dust_drylimit_factor)
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
     
     ! !USES:
     implicit NONE
@@ -476,8 +477,8 @@ contains
    ! Compute vertical-to-horizontal mass flux ratio
    ! ----------------------------------------------
    kvh = DustFluxV2HRatioMB95(clay, kvhmax)
-   if (isnan(kvh) ) then
-      write(*,*),'KVH was NaN, resetting to kvhmax'
+   if (ieee_is_nan(kvh)) then
+      write(*,*) 'KVH was NaN, resetting to kvhmax'
       kvh = kvhmax
    endif
 
